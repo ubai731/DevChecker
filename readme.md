@@ -5,3 +5,5 @@
 Currently supports C++, Python, and Rust.
 
 **Status:** Alpha Release — Under Development.
+
+[Release Page](https://github.com/ubai731/DevChecker/releases)
