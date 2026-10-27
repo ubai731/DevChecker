@@ -11,3 +11,5 @@ Currently supports C++, Python, and Rust.
 # Change Log
 
 > Added More Compilers
+
+> Make The App Never Stop Till you press X
