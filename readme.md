@@ -1,10 +1,15 @@
 # DevChecker
 
-**DevChecker** is a lightweight tool that checks whether supported compilers and interpreters are available on your system.
+**DevChecker** is a lightweight, fully open-source tool that checks whether supported compilers and interpreters are available on your system and tests their ability to compile or run simple programs.
 
-Currently supports C++, Python, and Rust.
+**Currently supports:** C++, C, Python, Rust, Java, Kotlin, C#, Go, JavaScript, PHP, TypeScript, and Swift.
 
-**Status:** Alpha Release — Under Development.
+**License:** Open Source  
+**Status:** Stable Release — Under Development.
+
+Nebula Verse Studios — Fully Open-Source.
+
+**_Keep Moving Forward._**
 
 [Release Page](https://github.com/ubai731/DevChecker/releases)
 
