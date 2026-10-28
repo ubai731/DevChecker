@@ -4,396 +4,499 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <vector>
+#include <system_error>
+
+namespace fs = std::filesystem;
+
+// Checks whether a command is available through Windows PATH.
+bool commandExists(const std::string& command)
+{
+    const std::string check = "where " + command + " >nul 2>&1";
+    return std::system(check.c_str()) == 0;
+}
+
+// Writes a test source file and checks both writing and closing errors.
+bool writeFile(const fs::path& path, const std::string& contents)
+{
+    std::ofstream file(path, std::ios::binary);
+    if (!file)
+        return false;
+
+    file << contents;
+    file.flush();
+
+    const bool writeOkay = static_cast<bool>(file);
+    file.close();
+
+    return writeOkay && !file.fail();
+}
+
+std::string quote(const fs::path& path)
+{
+    return "\"" + path.string() + "\"";
+}
+
+bool runCommand(const std::string& command)
+{
+    return std::system(command.c_str()) == 0;
+}
+
+fs::path getTempDirectory()
+{
+    const char* temp = std::getenv("TEMP");
+    if (temp && *temp)
+        return fs::path(temp);
+
+    const char* tmp = std::getenv("TMP");
+    if (tmp && *tmp)
+        return fs::path(tmp);
+
+    return {};
+}
+
+void removeIfExists(const fs::path& path)
+{
+    std::error_code ec;
+    fs::remove(path, ec); // Cleanup failure should not crash the checker.
+}
+
+void reportRun(const std::string& language, const std::string& command)
+{
+    if (runCommand(command))
+        std::cout << language << " test passed!\n";
+    else
+        std::cout << language << " program execution failed.\n";
+}
+
+bool prepareTemp(fs::path& dir)
+{
+    dir = getTempDirectory();
+    if (dir.empty())
+    {
+        std::cout << "ERROR: TEMP/TMP environment variable was not found.\n";
+        return false;
+    }
+
+    std::error_code ec;
+    if (!fs::exists(dir, ec) || ec)
+    {
+        std::cout << "ERROR: The temporary directory does not exist.\n";
+        return false;
+    }
+    return true;
+}
+
+std::string lowerCase(std::string value)
+{
+    for (char& ch : value)
+        ch = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(ch)));
+    return value;
+}
+
+void checkCpp(const fs::path& dir)
+{
+    std::string compiler;
+    std::string name;
+
+    // Prefer GCC, then Clang. MSVC is checked separately because it needs
+    // the Visual Studio Developer Command Prompt environment.
+    if (commandExists("g++")) {
+        compiler = "g++";
+        name = "GCC";
+    } else if (commandExists("clang++")) {
+        compiler = "clang++";
+        name = "Clang";
+    } else if (commandExists("cl")) {
+        compiler = "cl";
+        name = "MSVC";
+    }
+
+    if (compiler.empty()) {
+        std::cout << "ERROR: No supported C++ compiler was found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.cpp";
+    const fs::path exe = dir / "DevCheckerCppTest.exe";
+    const fs::path obj = dir / "DevCheckerCppTest.obj";
+    const std::string sourceCode =
+        "#include <iostream>\n"
+        "int main() { std::cout << \"C++ works!\" << std::endl; return 0; }\n";
+
+    if (!writeFile(source, sourceCode)) {
+        std::cout << "ERROR: Failed to write the C++ test file.\n";
+        return;
+    }
+
+    removeIfExists(exe);
+    std::string compile;
+    if (name == "MSVC") {
+        compile = "cl /nologo /EHsc " + quote(source) +
+                  " /Fe:" + quote(exe) +
+                  " /Fo:" + quote(obj) +
+                  " /link /OUT:" + quote(exe);
+    } else {
+        compile = compiler + " " + quote(source) + " -o " + quote(exe);
+    }
+
+    std::cout << name << " detected. Testing compilation...\n";
+    if (!runCommand(compile)) {
+        std::cout << "ERROR: C++ compilation failed.\n";
+        return;
+    }
+
+    std::cout << "C++ compilation successful.\n";
+    reportRun("C++", quote(exe));
+    removeIfExists(source);
+    removeIfExists(exe);
+    removeIfExists(obj);
+}
+
+void checkC(const fs::path& dir)
+{
+    std::string compiler;
+    if (commandExists("gcc"))
+        compiler = "gcc";
+    else if (commandExists("clang"))
+        compiler = "clang";
+
+    if (compiler.empty()) {
+        std::cout << "ERROR: No C compiler (GCC or Clang) was found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.c";
+    const fs::path exe = dir / "DevCheckerCTest.exe";
+    if (!writeFile(source,
+        "#include <stdio.h>\n"
+        "int main(void) { puts(\"C works!\"); return 0; }\n")) {
+        std::cout << "ERROR: Failed to write the C test file.\n";
+        return;
+    }
+
+    removeIfExists(exe);
+    if (!runCommand(compiler + " " + quote(source) + " -o " + quote(exe))) {
+        std::cout << "ERROR: C compilation failed.\n";
+    } else {
+        std::cout << "C compilation successful.\n";
+        reportRun("C", quote(exe));
+    }
+    removeIfExists(source);
+    removeIfExists(exe);
+}
+
+void checkPython(const fs::path& dir)
+{
+    std::string interpreter;
+    if (commandExists("python"))
+        interpreter = "python";
+    else if (commandExists("py"))
+        interpreter = "py";
+    else if (commandExists("python3"))
+        interpreter = "python3";
+
+    if (interpreter.empty()) {
+        std::cout << "ERROR: Python was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.py";
+    if (!writeFile(source, "print('Python works!')\n")) {
+        std::cout << "ERROR: Failed to write the Python test file.\n";
+        return;
+    }
+
+    reportRun("Python", interpreter + " " + quote(source));
+    removeIfExists(source);
+}
+
+void checkRust(const fs::path& dir)
+{
+    if (!commandExists("rustc")) {
+        std::cout << "ERROR: Rust compiler rustc was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.rs";
+    const fs::path exe = dir / "DevCheckerRustTest.exe";
+    if (!writeFile(source, "fn main() { println!(\"Rust works!\"); }\n")) {
+        std::cout << "ERROR: Failed to write the Rust test file.\n";
+        return;
+    }
+
+    removeIfExists(exe);
+    if (!runCommand("rustc " + quote(source) + " -o " + quote(exe))) {
+        std::cout << "ERROR: Rust compilation failed.\n";
+    } else {
+        std::cout << "Rust compilation successful.\n";
+        reportRun("Rust", quote(exe));
+    }
+    removeIfExists(source);
+    removeIfExists(exe);
+}
+
+void checkJava(const fs::path& dir)
+{
+    if (!commandExists("javac") || !commandExists("java")) {
+        std::cout << "ERROR: Java JDK (javac) and runtime (java) are required.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.java";
+    const fs::path classFile = dir / "DevChecker.class";
+    if (!writeFile(source,
+        "public class DevChecker {\n"
+        "  public static void main(String[] args) {\n"
+        "    System.out.println(\"Java works!\");\n"
+        "  }\n"
+        "}\n")) {
+        std::cout << "ERROR: Failed to write the Java test file.\n";
+        return;
+    }
+
+    removeIfExists(classFile);
+    if (!runCommand("javac -d " + quote(dir) + " " + quote(source))) {
+        std::cout << "ERROR: Java compilation failed.\n";
+    } else {
+        std::cout << "Java compilation successful.\n";
+        reportRun("Java", "java -cp " + quote(dir) + " DevChecker");
+    }
+    removeIfExists(source);
+    removeIfExists(classFile);
+}
+
+void checkKotlin(const fs::path& dir)
+{
+    if (!commandExists("kotlinc") || !commandExists("java")) {
+        std::cout << "ERROR: Kotlin compiler (kotlinc) and Java are required.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.kt";
+    const fs::path jar = dir / "DevCheckerKotlinTest.jar";
+    if (!writeFile(source, "fun main() { println(\"Kotlin works!\") }\n")) {
+        std::cout << "ERROR: Failed to write the Kotlin test file.\n";
+        return;
+    }
+
+    removeIfExists(jar);
+    if (!runCommand("kotlinc " + quote(source) +
+                    " -include-runtime -d " + quote(jar))) {
+        std::cout << "ERROR: Kotlin compilation failed.\n";
+    } else {
+        std::cout << "Kotlin compilation successful.\n";
+        reportRun("Kotlin", "java -jar " + quote(jar));
+    }
+    removeIfExists(source);
+    removeIfExists(jar);
+}
+
+void checkCSharp(const fs::path& dir)
+{
+    if (!commandExists("dotnet")) {
+        std::cout << "ERROR: .NET SDK (dotnet) was not found.\n";
+        return;
+    }
+
+    const fs::path project = dir / "DevCheckerCSharp";
+    std::error_code ec;
+    fs::create_directories(project, ec);
+    if (ec) {
+        std::cout << "ERROR: Could not create the temporary C# project folder.\n";
+        return;
+    }
+
+    const fs::path csproj = project / "DevCheckerCSharp.csproj";
+    const fs::path source = project / "Program.cs";
+    const std::string projectXml =
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
+        "  <PropertyGroup>\n"
+        "    <OutputType>Exe</OutputType>\n"
+        "    <TargetFramework>net8.0</TargetFramework>\n"
+        "  </PropertyGroup>\n"
+        "</Project>\n";
+
+    if (!writeFile(csproj, projectXml) ||
+        !writeFile(source, "Console.WriteLine(\"C# works!\");\n")) {
+        std::cout << "ERROR: Failed to write the C# test project.\n";
+        return;
+    }
+
+    // dotnet run compiles and then executes the test project.
+    reportRun("C#", "dotnet run --project " + quote(csproj) + " --nologo");
+    fs::remove_all(project, ec);
+}
+
+void checkGo(const fs::path& dir)
+{
+    if (!commandExists("go")) {
+        std::cout << "ERROR: Go toolchain was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.go";
+    const fs::path exe = dir / "DevCheckerGoTest.exe";
+    if (!writeFile(source,
+        "package main\n"
+        "import \"fmt\"\n"
+        "func main() { fmt.Println(\"Go works!\") }\n")) {
+        std::cout << "ERROR: Failed to write the Go test file.\n";
+        return;
+    }
+
+    removeIfExists(exe);
+    if (!runCommand("go build -o " + quote(exe) + " " + quote(source))) {
+        std::cout << "ERROR: Go compilation failed.\n";
+    } else {
+        std::cout << "Go compilation successful.\n";
+        reportRun("Go", quote(exe));
+    }
+    removeIfExists(source);
+    removeIfExists(exe);
+}
+
+void checkJavaScript(const fs::path& dir)
+{
+    if (!commandExists("node")) {
+        std::cout << "ERROR: Node.js was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.js";
+    if (!writeFile(source, "console.log('JavaScript works!');\n")) {
+        std::cout << "ERROR: Failed to write the JavaScript test file.\n";
+        return;
+    }
+
+    reportRun("JavaScript", "node " + quote(source));
+    removeIfExists(source);
+}
+
+void checkPHP(const fs::path& dir)
+{
+    if (!commandExists("php")) {
+        std::cout << "ERROR: PHP was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.php";
+    if (!writeFile(source, "<?php echo \"PHP works!\\n\"; ?>\n")) {
+        std::cout << "ERROR: Failed to write the PHP test file.\n";
+        return;
+    }
+
+    reportRun("PHP", "php " + quote(source));
+    removeIfExists(source);
+}
+
+void checkTypeScript(const fs::path& dir)
+{
+    if (!commandExists("tsc") || !commandExists("node")) {
+        std::cout << "ERROR: TypeScript compiler (tsc) and Node.js are required.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.ts";
+    const fs::path output = dir / "DevChecker.js";
+    if (!writeFile(source, "console.log('TypeScript works!');\n")) {
+        std::cout << "ERROR: Failed to write the TypeScript test file.\n";
+        return;
+    }
+
+    removeIfExists(output);
+    if (!runCommand("tsc --target ES2020 --module none --skipLibCheck --outDir " +
+                    quote(dir) + " " + quote(source))) {
+        std::cout << "ERROR: TypeScript compilation failed.\n";
+    } else {
+        std::cout << "TypeScript compilation successful.\n";
+        reportRun("TypeScript", "node " + quote(output));
+    }
+    removeIfExists(source);
+    removeIfExists(output);
+}
+
+void checkSwift(const fs::path& dir)
+{
+    if (!commandExists("swiftc")) {
+        std::cout << "ERROR: Swift compiler (swiftc) was not found.\n";
+        return;
+    }
+
+    const fs::path source = dir / "DevChecker.swift";
+    const fs::path exe = dir / "DevCheckerSwiftTest.exe";
+    if (!writeFile(source, "print(\"Swift works!\")\n")) {
+        std::cout << "ERROR: Failed to write the Swift test file.\n";
+        return;
+    }
+
+    removeIfExists(exe);
+    if (!runCommand("swiftc " + quote(source) + " -o " + quote(exe))) {
+        std::cout << "ERROR: Swift compilation failed.\n";
+    } else {
+        std::cout << "Swift compilation successful.\n";
+        reportRun("Swift", quote(exe));
+    }
+    removeIfExists(source);
+    removeIfExists(exe);
+}
 
 int main()
 {
-    std::string lang;
-    std::cout << "Hi , and Welcome to DevChecker" << std::endl;
-    std::cout << "Version 1.0.0 Pre-Alpha Release" << std::endl;
+    std::cout << "Hi, and welcome to DevChecker!\n";
+    std::cout << "Version 1.5.0 Stable Release Release\n\n";
+
     while (true)
     {
-        bool supported = false;
-        std::cout << "Supported Compilers to Check : C++ , C , Python , Rust , Java , Kotlin , C#" << std::endl;
-        std::cout << "Type your programming language that you want to check if the compiler works or no :" << std::endl;
-        std::cin >> lang;
-        for (size_t i = 0; i < lang.length(); i++)
-        {
-            lang[i] = std::tolower(static_cast<unsigned char>(lang[i]));
-        }
-        
+        std::cout << "\nSupported languages: C++, C, Python, Rust, Java, "
+                     "Kotlin, C#, Go, JavaScript, PHP, TypeScript, Swift\n";
+        std::cout << "Enter a language to test (or type exit to quit): ";
 
-        
-        if (lang == "c++" || lang == "cpp")
-        {
-            supported = true;
-
-            std::string cppCompiler;
-            std::string compilerName;
-
-            if (std::system("where g++ >nul 2>&1") == 0)
-            {
-                cppCompiler = "g++";
-                compilerName = "GCC";
-            }
-            else if (std::system("where clang++ >nul 2>&1") == 0)
-            {
-                cppCompiler = "clang++";
-                compilerName = "Clang";
-            }
-            else if (std::system("where cl >nul 2>&1") == 0)
-            {
-                cppCompiler = "cl";
-                compilerName = "MSVC";
-            }
-
-            if (cppCompiler.empty())
-            {
-                std::cout << "No supported C++ compiler found!" << std::endl;
-            }
-            else
-            {
-                std::cout << compilerName << " Found!" << std::endl;
-
-                const char* tempEnv = std::getenv("TEMP");
-
-                if (tempEnv == nullptr)
-                {
-                    std::cout << "TEMP folder not found!" << std::endl;
-                }
-                else
-                {
-                    std::filesystem::path tempPath = tempEnv;
-                    auto testFile = tempPath / "DevChecker.cpp";
-                    auto testExe = tempPath / "DevCheckerTest.exe";
-
-                    std::ofstream file(testFile);
-
-                    if (!file)
-                    {
-                        std::cout << "Failed to create test file!" << std::endl;
-                    }
-                    else
-                    {
-                        file << "#include <iostream>\n";
-                        file << "int main() {\n";
-                        file << "    std::cout << \"DevChecker works!\" << std::endl;\n";
-                        file << "    return 0;\n";
-                        file << "}\n";
-                        file.close();
-
-                        std::string compileCommand;
-
-                        if (compilerName == "MSVC")
-                        {
-                            compileCommand =
-                                "cl /nologo /EHsc \"" + testFile.string() +
-                                "\" /Fe:\"" + testExe.string() + "\" /Fo:\"" +
-                                (tempPath / "DevCheckerTest.obj").string() +
-                                "\" /link /OUT:\"" + testExe.string() + "\"";
-                        }
-                        else
-                        {
-                            compileCommand =
-                                cppCompiler + " \"" + testFile.string() +
-                                "\" -o \"" + testExe.string() + "\"";
-                        }
-
-                        int compileResult = std::system(compileCommand.c_str());
-
-                        if (compileResult != 0)
-                        {
-                            std::cout << "Compilation Failed!" << std::endl;
-                        }
-                        else
-                        {
-                            std::cout << "Compilation Successful!" << std::endl;
-
-                            std::string runCommand =
-                                "\"" + testExe.string() + "\"";
-
-                            int runResult = std::system(runCommand.c_str());
-
-                            if (runResult == 0)
-                            {
-                                std::cout << "C++ Compilation and Run Successful!"
-                                        << std::endl;
-                            }
-                            else
-                            {
-                                std::cout << "C++ Program Execution Failed!"
-                                        << std::endl;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        // PYTHON
-        if (lang == "python" || lang == "py")
-        {
-            supported = true;
-
-            std::string python;
-            if (std::system("where python >nul 2>&1") == 0)
-                python = "python";
-            else if (std::system("where py >nul 2>&1") == 0)
-                python = "py";
-            else if (std::system("where python3 >nul 2>&1") == 0)
-                python = "python3";
-
-            if (python.empty())
-                std::cout << "Python Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto path = std::filesystem::path(env) / "DevChecker.py";
-                    std::ofstream file(path);
-                    file << "print('Python works!')\n";
-                    file.close();
-
-                    std::string command =
-                        python + " \"" + path.string() + "\"";
-                    int result = file ? std::system(command.c_str()) : -1;
-
-                    std::cout << (result == 0
-                        ? "Python Test Passed!" : "Python Test Failed!")
-                        << std::endl;
-                }
-            }
+        std::string lang;
+        if (!(std::cin >> lang)) {
+            std::cout << "\nInput ended. Goodbye!\n";
+            break;
         }
 
-        // RUST
-        if (lang == "rust" || lang == "rs")
+        lang = lowerCase(lang);
+        if (lang == "exit" || lang == "quit" || lang == "q" || lang == "x")
         {
-            supported = true;
-
-            if (std::system("where rustc >nul 2>&1") != 0)
-                std::cout << "Rust Compiler Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto dir = std::filesystem::path(env);
-                    auto source = dir / "DevChecker.rs";
-                    auto exe = dir / "DevCheckerRust.exe";
-
-                    std::ofstream file(source);
-                    file << "fn main() { println!(\"Rust works!\"); }\n";
-                    file.close();
-
-                    std::string compile =
-                        "rustc \"" + source.string() + "\" -o \"" +
-                        exe.string() + "\"";
-
-                    int result = file ? std::system(compile.c_str()) : -1;
-
-                    if (result == 0)
-                    {
-                        std::string run = "\"" + exe.string() + "\"";
-                        int runResult = std::system(run.c_str());
-                        std::cout << (runResult == 0
-                            ? "Rust Test Passed!" : "Rust Run Failed!")
-                            << std::endl;
-                    }
-                    else
-                        std::cout << "Rust Compilation Failed!" << std::endl;
-                }
-            }
+            std::cout << "Goodbye!\n";
+            break;
         }
 
-        // C
-        if (lang == "c")
-        {
-            supported = true;
+        fs::path tempDir;
+        if (!prepareTemp(tempDir))
+            continue;
 
-            std::string compiler;
-            if (std::system("where gcc >nul 2>&1") == 0)
-                compiler = "gcc";
-            else if (std::system("where clang >nul 2>&1") == 0)
-                compiler = "clang";
-
-            if (compiler.empty())
-                std::cout << "C Compiler Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto dir = std::filesystem::path(env);
-                    auto source = dir / "DevChecker.c";
-                    auto exe = dir / "DevCheckerC.exe";
-
-                    std::ofstream file(source);
-                    file << "#include <stdio.h>\n";
-                    file << "int main(void) { puts(\"C works!\"); return 0; }\n";
-                    file.close();
-
-                    std::string compile =
-                        compiler + " \"" + source.string() + "\" -o \"" +
-                        exe.string() + "\"";
-
-                    int result = file ? std::system(compile.c_str()) : -1;
-
-                    if (result == 0)
-                    {
-                        std::string run = "\"" + exe.string() + "\"";
-                        int runResult = std::system(run.c_str());
-                        std::cout << (runResult == 0
-                            ? "C Test Passed!" : "C Run Failed!")
-                            << std::endl;
-                    }
-                    else
-                        std::cout << "C Compilation Failed!" << std::endl;
-                }
-            }
-        }
-
-        // JAVA
-        if (lang == "java" || lang == "jv")
-        {
-            supported = true;
-
-            if (std::system("where javac >nul 2>&1") != 0 ||
-                std::system("where java >nul 2>&1") != 0)
-                std::cout << "Java JDK/Runtime Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto dir = std::filesystem::path(env);
-                    auto source = dir / "DevChecker.java";
-
-                    std::ofstream file(source);
-                    file << "public class DevChecker {\n";
-                    file << " public static void main(String[] args) {\n";
-                    file << "  System.out.println(\"Java works!\");\n";
-                    file << " }\n}\n";
-                    file.close();
-
-                    std::string compile =
-                        "javac \"" + source.string() + "\"";
-
-                    int result = file ? std::system(compile.c_str()) : -1;
-
-                    if (result == 0)
-                    {
-                        std::string run =
-                            "java -cp \"" + dir.string() + "\" DevChecker";
-                        int runResult = std::system(run.c_str());
-                        std::cout << (runResult == 0
-                            ? "Java Test Passed!" : "Java Run Failed!")
-                            << std::endl;
-                    }
-                    else
-                        std::cout << "Java Compilation Failed!" << std::endl;
-                }
-            }
-        }
-
-        // KOTLIN
-        if (lang == "kotlin" || lang == "kt")
-        {
-            supported = true;
-
-            if (std::system("where kotlinc >nul 2>&1") != 0 ||
-                std::system("where java >nul 2>&1") != 0)
-                std::cout << "Kotlin Compiler or Java Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto dir = std::filesystem::path(env);
-                    auto source = dir / "DevChecker.kt";
-                    auto jar = dir / "DevCheckerKotlin.jar";
-
-                    std::ofstream file(source);
-                    file << "fun main() { println(\"Kotlin works!\") }\n";
-                    file.close();
-
-                    std::string compile =
-                        "kotlinc \"" + source.string() +
-                        "\" -include-runtime -d \"" + jar.string() + "\"";
-
-                    int result = file ? std::system(compile.c_str()) : -1;
-
-                    if (result == 0)
-                    {
-                        std::string run = "java -jar \"" + jar.string() + "\"";
-                        int runResult = std::system(run.c_str());
-                        std::cout << (runResult == 0
-                            ? "Kotlin Test Passed!" : "Kotlin Run Failed!")
-                            << std::endl;
-                    }
-                    else
-                        std::cout << "Kotlin Compilation Failed!" << std::endl;
-                }
-            }
-        }
-
-        // C#
-        if (lang == "c#" || lang == "csharp")
-        {
-            supported = true;
-
-            if (std::system("where dotnet >nul 2>&1") != 0)
-                std::cout << ".NET SDK Not Found!" << std::endl;
-            else
-            {
-                const char* env = std::getenv("TEMP");
-                if (!env)
-                    std::cout << "TEMP folder not found!" << std::endl;
-                else
-                {
-                    auto project =
-                        std::filesystem::path(env) / "DevCheckerCSharp";
-                    std::filesystem::create_directories(project);
-
-                    auto csproj = project / "DevCheckerCSharp.csproj";
-                    auto source = project / "Program.cs";
-
-                    std::ofstream config(csproj);
-                    config << "<Project Sdk=\"Microsoft.NET.Sdk\">\n";
-                    config << "<PropertyGroup><OutputType>Exe</OutputType>";
-                    config << "<TargetFramework>net8.0</TargetFramework>";
-                    config << "</PropertyGroup></Project>\n";
-                    config.close();
-
-                    std::ofstream file(source);
-                    file << "Console.WriteLine(\"CSharp works!\");\n";
-                    file.close();
-
-                    std::string command =
-                        "dotnet run --project \"" + csproj.string() + "\"";
-
-                    int result = (config && file)
-                        ? std::system(command.c_str()) : -1;
-
-                    std::cout << (result == 0
-                        ? "CSharp Test Passed!" : "CSharp Test Failed!")
-                        << std::endl;
-                }
-            }
-        }
-        if (!supported)
-        {
-            std::cout << "Sorry but You Select To Test Unsupported Compiler" << std::endl;
-        }
-        
+        if (lang == "c++" || lang == "cpp" || lang == "cplusplus")
+            checkCpp(tempDir);
+        else if (lang == "c")
+            checkC(tempDir);
+        else if (lang == "python" || lang == "py" || lang == "python3")
+            checkPython(tempDir);
+        else if (lang == "rust" || lang == "rs")
+            checkRust(tempDir);
+        else if (lang == "java" || lang == "jv")
+            checkJava(tempDir);
+        else if (lang == "kotlin" || lang == "kt")
+            checkKotlin(tempDir);
+        else if (lang == "c#" || lang == "csharp" || lang == "cs")
+            checkCSharp(tempDir);
+        else if (lang == "go" || lang == "golang")
+            checkGo(tempDir);
+        else if (lang == "javascript" || lang == "js" || lang == "node")
+            checkJavaScript(tempDir);
+        else if (lang == "php")
+            checkPHP(tempDir);
+        else if (lang == "typescript" || lang == "ts")
+            checkTypeScript(tempDir);
+        else if (lang == "swift")
+            checkSwift(tempDir);
+        else
+            std::cout << "ERROR: Unsupported language. Check the supported list above.\n";
     }
+
+    return 0;
 }
