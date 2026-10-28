@@ -8,6 +8,8 @@ Currently supports C++, Python, and Rust.
 
 [Release Page](https://github.com/ubai731/DevChecker/releases)
 
-# Change Log Last Updated 28/10/2026 10:32 AM
+# Change Log Last Updated 28/10/2026 11:33 AM
  
-> Added Compile Test And Run Test 
+> Added More Compilers To Test
+
+> Improved The Compiler Test
