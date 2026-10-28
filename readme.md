@@ -8,8 +8,6 @@ Currently supports C++, Python, and Rust.
 
 [Release Page](https://github.com/ubai731/DevChecker/releases)
 
-# Change Log
-
-> Added More Compilers
-
-> Make The App Never Stop Till you press X
+# Change Log Last Updated 28/10/2026 10:32 AM
+ 
+> Added Compile Test And Run Test 
